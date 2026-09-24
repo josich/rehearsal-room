@@ -93,13 +93,15 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const Q = new URLSearchParams(location.search);
 const SHOT = Q.has('shot');
 const DBG = Q.has('dbg');
 if (SHOT) document.body.classList.add('shot');
 const COARSE = matchMedia('(pointer:coarse)').matches;
-let HIGH = !COARSE;
+const LITE = COARSE || Q.has('lite');   // phones: fewer lights, no post, one cheap reflection
+let HIGH = !LITE;
 const $ = id => document.getElementById(id);
 const stat = t => { $('stat').textContent = t; };
 const prog = f => { $('bar').firstElementChild.style.width = (f * 100).toFixed(0) + '%'; };
@@ -108,13 +110,15 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 /* ---------------- renderer ---------------- */
 const canvas = $('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: SHOT });
-renderer.setPixelRatio(SHOT ? 1.6 : Math.min(devicePixelRatio, HIGH ? 2 : 1.25));
+renderer.setPixelRatio(SHOT ? 1.6 : LITE ? 1 : Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight, false);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.35;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false;   // the room is static: shadows are drawn once, and again when a light is switched
+const reShadow = () => { renderer.shadowMap.needsUpdate = true; };
 const ANISO = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 RectAreaLightUniformsLib.init();
 
@@ -649,8 +653,8 @@ function buildLights() {
     ra.position.copy(p); if (ax === 'z') ra.position.x += s * .03; else ra.position.z += s * .03;
     ra.lookAt(ra.position.x + (ax === 'z' ? s * .5 : 0), H + .6, ra.position.z + (ax === 'x' ? s * .5 : 0));
     scene.add(ra); LED.push(ra);
-    const rd = new THREE.RectAreaLight(0xff7632, 6, len, .06); rd.position.copy(p);
-    rd.lookAt(rd.position.x - (ax === 'z' ? s * .35 : 0), H - 1.2, rd.position.z - (ax === 'x' ? s * .35 : 0)); scene.add(rd); LED.push(rd);
+    if (!LITE) { const rd = new THREE.RectAreaLight(0xff7632, 6, len, .06); rd.position.copy(p);
+    rd.lookAt(rd.position.x - (ax === 'z' ? s * .35 : 0), H - 1.2, rd.position.z - (ax === 'x' ? s * .35 : 0)); scene.add(rd); LED.push(rd); } else ra.intensity = 12;
   }
   // long warm ceiling fixture
   const fx = box(.08, .03, 1.2, new THREE.MeshStandardMaterial({ color: 0x222, emissive: 0xffb070, emissiveIntensity: .2 }), -.55, H - .115, .2); fx.castShadow = false;
@@ -658,12 +662,12 @@ function buildLights() {
   const tube = new THREE.RectAreaLight(0xffc48a, 1.8, .08, 1.2); tube.position.set(-.55, H - .14, .2); tube.lookAt(-.55, 0, .2); tube.intensity = 1.6; scene.add(tube); LAMPS.tube = tube;
   // shadow-casting key spots (the ceiling fixture and the sconces' throw)
   spot(0xffc08a, 8, V(-.9, H - .06, -1.7), V(-1.2, 0, -2.7), .95, .95, true);
-  spot(0xffa66a, 10, V(-1.2, H - .06, 1.6), V(-2.6, .4, 1.2), 1.0, .9, true);
-  spot(0xffa870, 8, V(-.6, H - .06, 3.2), V(-1.2, 0, 4.4), 1.0, .95, true);
-  spot(0xffb27a, 5, V(1.6, H - .06, -1.6), V(2.6, .7, -2), .9, .95, false);
+  spot(0xffa66a, 10, V(-1.2, H - .06, 1.6), V(-2.6, .4, 1.2), 1.0, .9, !LITE);
+  spot(0xffa870, 8, V(-.6, H - .06, 3.2), V(-1.2, 0, 4.4), 1.0, .95, !LITE);
+  if (!LITE) spot(0xffb27a, 5, V(1.6, H - .06, -1.6), V(2.6, .7, -2), .9, .95, false);
   // windows: soft pink-lavender daylight through bubble wrap
   const win = new THREE.RectAreaLight(0xe8b6ea, 5, 2.7, .95); win.position.set(.35, 1.6, ZN + .06); win.lookAt(.35, -1.2, ZN + 2); win.intensity = 7; win.color.set(0xe0b6e6);
-  const win2 = new THREE.RectAreaLight(0xe6b0e0, 5, 2.7, .6); win2.position.set(.35, 1.3, ZN + .1); win2.lookAt(-.3, 0, ZN + 2.2); scene.add(win2); scene.add(win);
+  const win2 = new THREE.RectAreaLight(0xe6b0e0, 5, 2.7, .6); win2.position.set(.35, 1.3, ZN + .1); win2.lookAt(-.3, 0, ZN + 2.2); if (!LITE) scene.add(win2); else win.intensity = 10; scene.add(win);
 }
 
 /* ---------------- fixtures on walls ---------------- */
@@ -672,14 +676,15 @@ function sconce(x, y, z, ry, key) {
   box(.06, .12, .02, M.frameBlack, 0, 0, .01, g);
   rod(V(0, 0, .02), V(0, 0, .09), .006, M.frameBlack, g);
   const sh = cyl(.045, .035, .11, M.frameBlack, 0, -.02, .12, g); sh.rotation.x = .25;
-  const b = mesh(new THREE.SphereGeometry(.018, 16, 12), M.bulb, 0, -.07, .13, g, false);
+  const b = mesh(new THREE.SphereGeometry(.018, 16, 12), M.bulb, 0, -.07, .13, g, false); b.userData.noMerge = sh.userData.noMerge = true;
   const wp = new THREE.Vector3(); g.localToWorld(wp.set(0, -.08, .13));
   const tg = new THREE.Vector3(); g.localToWorld(tg.set(0, -2.2, .015));
   const s = spot(0xffa25a, 26, wp, tg, .55, .85, false, 6);
   const u = new THREE.Vector3(); g.localToWorld(u.set(0, 1.2, .02));
-  const s2 = spot(0xff9a55, 9, wp, u, .6, 1, false, 3);
+  const s2 = LITE ? null : spot(0xff9a55, 9, wp, u, .6, 1, false, 3);
   const L = { on: true, lights: [s, s2], mats: [b] };
-  interact(sh, 'Wall lamp', () => { L.on = !L.on; s.visible = s2.visible = L.on; b.material = L.on ? M.bulb : M.black; });
+  const i1 = s.intensity, i2 = s2 ? s2.intensity : 0;
+  interact(sh, 'Wall lamp', () => { L.on = !L.on; s.intensity = L.on ? i1 : 0; if (s2) s2.intensity = L.on ? i2 : 0; b.material = L.on ? M.bulb : M.black; reShadow(); });
   if (key) LAMPS[key] = L;
 }
 function frame(tex, w, h, x, y, z, ry) {
@@ -791,7 +796,7 @@ function head(g, y, w, h, d, opt) {
     const k = cyl(.012, .014, .018, M.blackPlastic, kx, y + h * .22, d / 2 + .012, g, 20); k.rotation.x = Math.PI / 2;
     const cap = cyl(.009, .009, .003, M.chrome, kx, y + h * .22, d / 2 + .022, g, 20); cap.rotation.x = Math.PI / 2;
   }
-  const jw = mesh(new THREE.SphereGeometry(.011, 16, 10), M.jewelRed, w / 2 - .07, y + h * .22, d / 2 + .01, g, false);
+  const jw = mesh(new THREE.SphereGeometry(.011, 16, 10), M.jewelRed, w / 2 - .07, y + h * .22, d / 2 + .01, g, false); jw.userData.noMerge = true;
   const sw = box(.012, .025, .012, M.chrome, w / 2 - .04, y + h * .22, d / 2 + .012, g);
   if (opt.logo) decal(opt.logo, opt.logoW, opt.logoW * (opt.logoAspect || .3), opt.logoX || 0, y + h - fh / 2 - .02, d / 2 + .005, g, { emissive: 0xffffff, emissiveMap: opt.logo, emissiveIntensity: .45 });
   for (const sx of [-1, 1]) for (const sy of [0, 1]) for (const sz of [-1, 1]) {
@@ -845,7 +850,7 @@ function guitarShape() {
 }
 function guitar(bodyMat, bass, x, z) {
   const g = group(x, 0, z, Math.PI / 2);
-  const inner = new THREE.Group(); inner.position.y = .33 * (bass ? 1.06 : 1); inner.rotation.x = -.12; g.add(inner);
+  const inner = new THREE.Group(); inner.userData.keep = true; inner.position.y = .33 * (bass ? 1.06 : 1); inner.rotation.x = -.12; g.add(inner);
   const sc = bass ? 1.1 : 1;
   const eg = new THREE.ExtrudeGeometry(guitarShape(), { depth: .04, bevelEnabled: true, bevelThickness: .006, bevelSize: .007, bevelSegments: 4, curveSegments: 28 });
   eg.translate(0, 0, -.02); eg.scale(sc, sc, 1);
@@ -885,7 +890,7 @@ function lugs(r, depth, n, parent) {
   }
 }
 function drum(r, depth, shellMat, topMat, botMat, name, snd) {
-  const g = new THREE.Group();
+  const g = new THREE.Group(); g.userData.keep = true;
   mesh(new THREE.CylinderGeometry(r, r, depth, 64, 1, true), shellMat, 0, 0, 0, g);
   const t = mesh(new THREE.CircleGeometry(r * .99, 64), topMat, 0, depth / 2 + .002, 0, g); t.rotation.x = -Math.PI / 2;
   const b = mesh(new THREE.CircleGeometry(r * .99, 64), botMat, 0, -depth / 2 - .002, 0, g); b.rotation.x = Math.PI / 2;
@@ -907,7 +912,7 @@ function tripod(x, z, top, parent, spread = .3) {
   cyl(.016, .016, .05, M.chromeDark, x, hub + .02, z, parent, 12);
 }
 function cymbal(R, pos, tilt, name, snd, parent) {
-  const g = new THREE.Group(); g.position.copy(pos); g.rotation.set(tilt[0], 0, tilt[1]); parent.add(g);
+  const g = new THREE.Group(); g.userData.keep = true; g.position.copy(pos); g.rotation.set(tilt[0], 0, tilt[1]); parent.add(g);
   const m = mesh(cymbalGeo(R), M.cym, 0, 0, 0, g);
   cyl(.018, .018, .012, M.rubber, 0, R * .085 + .006, 0, g, 16); cyl(.008, .012, .02, M.chromeDark, 0, R * .085 + .02, 0, g, 12);
   interact(m, name, () => { AUDIO.cymbal(snd); WOBBLE.push({ o: g, base: tilt[0], ax: 'x', a: .12, t: 0, f: 7 }); });
@@ -993,7 +998,7 @@ function buildDesk() {
   const dtx = dawTex(); const scrMat = new THREE.MeshStandardMaterial({ map: dtx, emissive: 0xffffff, emissiveMap: dtx, emissiveIntensity: .55, roughness: .25 });
   const face = mesh(new THREE.PlaneGeometry(.63, .355), scrMat, -.05, 1.125, -.106, g, false);
   const sl = new THREE.PointLight(0x7fa8ff, 2.4, 3.2, 2); sl.position.set(-.05, 1.05, .25); g.add(sl);
-  let scrOn = true; interact(face, 'Monitor', () => { scrOn = !scrOn; scrMat.emissiveIntensity = scrOn ? .55 : 0; scrMat.color.setScalar(scrOn ? 1 : .02); sl.visible = scrOn; });
+  let scrOn = true; interact(face, 'Monitor', () => { scrOn = !scrOn; scrMat.emissiveIntensity = scrOn ? .55 : 0; scrMat.color.setScalar(scrOn ? 1 : .02); sl.intensity = scrOn ? 2.4 : 0; });
   // studio monitors
   for (const sx of [-1, 1]) {
     const mg = group(sx * .6, .77, -.12, -sx * .2, g);
@@ -1018,10 +1023,10 @@ function buildDesk() {
   cyl(.07, .075, .02, M.brushed, 0, .01, 0, lg, 24);
   rod(V(0, .02, 0), V(.02, .34, -.08), .008, M.brushed, lg); rod(V(.02, .34, -.08), V(-.2, .42, .02), .008, M.brushed, lg);
   const sh = cyl(.03, .07, .1, M.brushed, -.22, .38, .04, lg, 24); sh.rotation.z = .6;
-  const bulb = mesh(new THREE.SphereGeometry(.022, 12, 8), M.bulb, -.24, .35, .04, lg, false);
+  const bulb = mesh(new THREE.SphereGeometry(.022, 12, 8), M.bulb, -.24, .35, .04, lg, false); bulb.userData.noMerge = true;
   const lp = new THREE.PointLight(0xffb266, 2.2, 3.5, 2); lp.position.set(-.26, .3, .06); lg.add(lp);
-  lp.castShadow = true; lp.shadow.mapSize.set(512, 512); lp.shadow.bias = -.002;
-  interact(sh, 'Desk lamp', () => { lp.visible = !lp.visible; bulb.material = lp.visible ? M.bulb : M.black; });
+  if (!LITE) { lp.castShadow = true; lp.shadow.mapSize.set(512, 512); lp.shadow.bias = -.002; }
+  const lpI = lp.intensity; interact(sh, 'Desk lamp', () => { lp.intensity = lp.intensity ? 0 : lpI; bulb.material = lp.intensity ? M.bulb : M.black; reShadow(); });
   // plants on the desk
   g.updateMatrixWorld(true);
   const p1 = new THREE.Vector3(-.82, .77, -.2); g.localToWorld(p1); potPlant(p1.x, p1.y, p1.z, .55, 5);
@@ -1061,8 +1066,8 @@ function floorLamp(x, z) {
   rod(V(x, .02, z), V(x, 1.48, z), .012, M.black);
   const sh = mesh(new THREE.CylinderGeometry(.17, .21, .3, 40, 1, true), M.shade, x, 1.52, z);
   const pl = new THREE.PointLight(0xffb070, 5, 5, 2); pl.position.set(x, 1.5, z); scene.add(pl);
-  pl.castShadow = true; pl.shadow.mapSize.set(1024, 1024); pl.shadow.bias = -.002; pl.shadow.radius = 5;
-  interact(sh, 'Floor lamp', () => { pl.visible = !pl.visible; M.shade.emissiveIntensity = pl.visible ? .45 : 0; });
+  if (!LITE) { pl.castShadow = true; pl.shadow.mapSize.set(1024, 1024); pl.shadow.bias = -.002; pl.shadow.radius = 5; }
+  const plI = pl.intensity; interact(sh, 'Floor lamp', () => { pl.intensity = pl.intensity ? 0 : plI; M.shade.emissiveIntensity = pl.intensity ? .45 : 0; reShadow(); });
   blob(x, z, .5, .5, .6);
   collide(x - .2, x + .2, z - .2, z + .2);
 }
@@ -1192,6 +1197,7 @@ const FinalShader = {
   gl_FragColor=vec4(c,1.);}`,
 };
 function buildComposer() {
+  if (LITE) return;
   const w = innerWidth, h = innerHeight, pr = renderer.getPixelRatio();
   const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: HIGH ? 4 : 0 });
   composer = new EffectComposer(renderer, rt);
@@ -1207,21 +1213,63 @@ function buildComposer() {
   finalPass = new ShaderPass(FinalShader); composer.addPass(finalPass);
 }
 
+/* ---------------- merge everything that never moves: one draw call per material ---------------- */
+function mergeStatic() {
+  scene.updateMatrixWorld(true);
+  const holderOf = o => { let p = o.parent; while (p && p !== scene && !p.userData.keep) p = p.parent; return p || scene; };
+  const hitOf = (o, h) => { for (let q = o; q && q !== h; q = q.parent) if (q.userData.hit) return q.userData.hit; return null; };
+  const buckets = new Map();
+  scene.traverse(o => {
+    if (!o.isMesh || o.isInstancedMesh || o.userData.noMerge || o.userData.keep) return;
+    const mt = o.material, g = o.geometry;
+    if (Array.isArray(mt) || mt.transparent || !g.attributes.uv || !g.attributes.normal || Object.keys(g.morphAttributes).length) return;
+    const h = holderOf(o), hit = hitOf(o, h);
+    const key = h.uuid + '|' + mt.uuid + '|' + o.castShadow + o.receiveShadow + '|' + (hit ? hit.label : '');
+    if (!buckets.has(key)) buckets.set(key, { h, mt, hit, cast: o.castShadow, recv: o.receiveShadow, list: [] });
+    buckets.get(key).list.push(o);
+  });
+  const inv = new THREE.Matrix4(), m = new THREE.Matrix4();
+  let before = 0, after = 0;
+  for (const b of buckets.values()) {
+    before += b.list.length; if (b.list.length < 2) { after++; continue; }
+    inv.copy(b.h.matrixWorld).invert();
+    const geos = b.list.map(o => {
+      let g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+      for (const n of Object.keys(g.attributes)) if (n !== 'position' && n !== 'normal' && n !== 'uv') g.deleteAttribute(n);
+      m.multiplyMatrices(inv, o.matrixWorld); g.applyMatrix4(m); return g;
+    });
+    const merged = mergeGeometries(geos); if (!merged) { after += b.list.length; continue; }
+    const mm = new THREE.Mesh(merged, b.mt); mm.castShadow = b.cast; mm.receiveShadow = b.recv; if (b.hit) mm.userData.hit = b.hit;
+    b.h.add(mm); for (const o of b.list) o.parent.remove(o); after++;
+  }
+  return [before, after];
+}
+
 /* ---------------- environment reflections from the room itself ---------------- */
 function bakeEnv() {
-  const crt = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
+  const pm = new THREE.PMREMGenerator(renderer);
+  const envStudio = pm.fromScene(new RoomEnvironment(), .04).texture;
+  M.cym.envMap = envStudio; M.cym.needsUpdate = true;
+  if (LITE) {
+    scene.environment = envStudio; scene.environmentIntensity = .25; M.ceil.envMapIntensity = .9; renderer.toneMappingExposure = 1.2;
+    for (const m of [M.chrome, M.chromeDark, M.shell]) m.envMapIntensity = m === M.shell ? .3 : .6;
+    return;
+  }
+  // light changes below are intensity only: a changed light count would recompile every shader
+  const hemi = scene.children.find(o => o.isHemisphereLight), amb = scene.children.find(o => o.isAmbientLight);
+  const h0 = hemi.intensity, a0 = amb.intensity;
+  const crt = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType });
   const cc = new THREE.CubeCamera(.05, 30, crt); cc.position.set(-.3, 1.4, 0); scene.add(cc);
-  const fill = new THREE.AmbientLight(0xffe2c4, 2.2); scene.add(fill); cc.update(renderer, scene); scene.remove(fill);
-  const pm = new THREE.PMREMGenerator(renderer); const env = pm.fromCubemap(crt.texture).texture;
+  amb.intensity = a0 + 2.2; cc.update(renderer, scene); amb.intensity = a0;
+  const env = pm.fromCubemap(crt.texture).texture;
   scene.environment = env; scene.environmentIntensity = .55;
-  for (const l of LED) l.visible = false; const ledE = M.led.emissiveIntensity; M.led.emissiveIntensity = 0;
-  const fill2 = new THREE.HemisphereLight(0xfff0dc, 0x4a3e34, 1.3); scene.add(fill2);
-  const crt2 = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType }); const cc2 = new THREE.CubeCamera(.05, 30, crt2); cc2.position.set(-.9, 1.5, -2.4); scene.add(cc2);
-  cc2.update(renderer, scene); scene.remove(cc2, fill2); for (const l of LED) l.visible = true; M.led.emissiveIntensity = ledE;
+  const ledI = LED.map(l => l.intensity), ledE = M.led.emissiveIntensity;
+  LED.forEach(l => { l.intensity = 0; }); M.led.emissiveIntensity = 0; hemi.intensity = h0 + 1.3;
+  cc.position.set(-.9, 1.5, -2.4); const crt2 = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType }); const cc2 = new THREE.CubeCamera(.05, 30, crt2); cc2.position.copy(cc.position); scene.add(cc2);
+  cc2.update(renderer, scene); scene.remove(cc2, cc);
+  LED.forEach((l, i) => { l.intensity = ledI[i]; }); M.led.emissiveIntensity = ledE; hemi.intensity = h0;
   const env2 = pm.fromCubemap(crt2.texture).texture;
-  const envStudio = pm.fromScene(new RoomEnvironment(), .04).texture; M.cym.envMap = envStudio; M.cym.needsUpdate = true;
   for (const m of [M.chrome, M.chromeDark, M.shell]) { m.envMap = env2; m.envMapIntensity = m === M.shell ? .12 : .3; m.needsUpdate = true; }
-  scene.remove(cc);
 }
 
 /* ---------------- camera views & controls ---------------- */
@@ -1305,13 +1353,15 @@ function move(dt) {
 if (COARSE) $('hint').textContent = 'Left thumb walks · drag the right side to look · tap drums, guitars, amps, lamps';
 $('bA').onclick = () => setView('a'); $('bB').onclick = () => setView('b');
 let ledOn = true;
-$('bLed').onclick = () => { ledOn = !ledOn; for (const l of LED) l.visible = ledOn; M.led.emissiveIntensity = ledOn ? 7 : 0; $('bLed').setAttribute('aria-pressed', ledOn); };
-$('bQ').onclick = () => { HIGH = !HIGH; gtao.enabled = HIGH; renderer.setPixelRatio(Math.min(devicePixelRatio, HIGH ? 2 : 1.1)); onResize(); $('bQ').textContent = 'Quality: ' + (HIGH ? 'High' : 'Fast'); };
-function onResize() { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight, false); composer.setSize(innerWidth, innerHeight); gtao.setSize(innerWidth, innerHeight); }
+$('bLed').onclick = () => { ledOn = !ledOn; for (const l of LED) { if (l.userData.i === undefined) l.userData.i = l.intensity; l.intensity = ledOn ? l.userData.i : 0; } M.led.emissiveIntensity = ledOn ? 7 : 0; $('bLed').setAttribute('aria-pressed', ledOn); };
+if (LITE) $('bQ').textContent = 'Quality: Phone';
+$('bQ').onclick = () => { if (!gtao) return; HIGH = !HIGH; gtao.enabled = HIGH; renderer.setPixelRatio(Math.min(devicePixelRatio, HIGH ? 2 : 1.1)); onResize(); $('bQ').textContent = 'Quality: ' + (HIGH ? 'High' : 'Fast'); };
+function onResize() { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight, false); if (composer) { composer.setSize(innerWidth, innerHeight); gtao.setSize(innerWidth, innerHeight); } }
 addEventListener('resize', onResize);
 
 /* ---------------- boot ---------------- */
 const clock = new THREE.Clock();
+let shadowFrames = 3; function reShadowTick() { if (shadowFrames > 0) { shadowFrames--; reShadow(); } }
 let frames = 0;
 function loop() {
   const dt = Math.min(.05, clock.getDelta()), t = clock.elapsedTime;
@@ -1323,11 +1373,12 @@ function loop() {
     if (w.ax === 'x') w.o.rotation.x = v; else w.o.rotation.z = v - w.base;
     if (w.t > 3) { if (w.ax === 'x') w.o.rotation.x = w.base; else w.o.rotation.z = 0; WOBBLE.splice(i, 1); }
   }
-  finalPass.uniforms.time.value = t;
-  composer.render();
+  reShadowTick();
+  if (composer) { finalPass.uniforms.time.value = t; composer.render(); } else renderer.render(scene, camera);
   if ((frames++ & 7) === 0) centreTip();
   if (SHOT && frames === 12) document.title = 'READY';
   if (DBG) document.documentElement.dataset.cam = camera.position.x.toFixed(2) + ',' + camera.position.z.toFixed(2);
+  if (DBG && (frames % 30) === 0) { let lights = 0, shadows = 0; scene.traverse(o => { if (o.isLight && o.visible) { lights++; if (o.castShadow) shadows++; } }); console.log('PERF ' + JSON.stringify({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, lights, shadows, meshes: renderer.info.memory.geometries, dt: +(dt * 1000).toFixed(1) })); }
   requestAnimationFrame(loop);
 }
 async function boot() {
@@ -1338,6 +1389,7 @@ async function boot() {
     stat('Baking reflections…'); prog(.94); await tick();
     buildComposer(); setView(Q.get('cam') === 'b' ? 'b' : 'a');
     if (Q.has('px')) { camera.position.set(+Q.get('px'), +Q.get('py'), +Q.get('pz')); const tv = V(+Q.get('tx'), +Q.get('ty'), +Q.get('tz')); const d = tv.sub(camera.position).normalize(); yaw = Math.atan2(-d.x, -d.z); pitch = Math.asin(d.y); applyLook(); }
+    const mg = mergeStatic(); if (DBG) console.log('MERGE ' + mg.join(' -> '));
     renderer.compile(scene, camera); bakeEnv();
     prog(1); stat('Ready'); $('go').disabled = false;
     if (SHOT) $('gate').remove();
